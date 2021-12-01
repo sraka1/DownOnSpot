@@ -1,22 +1,22 @@
+#![feature(async_closure)]
 #[macro_use]
 extern crate log;
 
 mod converter;
 mod downloader;
 mod error;
+mod server;
+mod cli;
 mod settings;
 mod spotify;
 mod tag;
 
-use async_std::task;
 use colored::Colorize;
-use downloader::{DownloadState, Downloader};
+use downloader::{Downloader};
+use server::websocket::{self, Websocket};
 use settings::Settings;
 use spotify::Spotify;
-use std::{
-	env,
-	time::{Duration, Instant},
-};
+use std::{env::{args}, sync::Arc};
 
 #[cfg(not(windows))]
 #[tokio::main]
@@ -33,6 +33,7 @@ async fn main() {
 	if control::set_virtual_terminal(true).is_ok() {};
 	start().await;
 }
+
 
 async fn start() {
 	let settings = match Settings::load().await {
@@ -70,15 +71,6 @@ async fn start() {
 		}
 	};
 
-	let args: Vec<String> = env::args().collect();
-	if args.len() <= 1 {
-		println!(
-			"Usage:\n{} (track_url | album_url | playlist_url | artist_url )",
-			args[0]
-		);
-		return;
-	}
-
 	let spotify = match Spotify::new(
 		&settings.username,
 		&settings.password,
@@ -101,38 +93,27 @@ async fn start() {
 		}
 	};
 
-	let input = args[1..].join(" ");
-
 	let downloader = Downloader::new(settings.downloader, spotify);
+
+	if settings.websocket.enabled {
+		websocket::start(settings.websocket.ip ,settings.websocket.port, Arc::new(downloader));
+		return;
+	}
+
+	let args: Vec<String> = args().collect();
+	if args.len() <= 1 {
+		cli::print_usage(args[0].clone());
+		return;
+	}
+	
+	let input = args[1..].join(" ");
 	match downloader.handle_input(&input).await {
 		Ok(search_results) => {
-			if let Some(search_results) = search_results {
-				print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-
-				for (i, track) in search_results.iter().enumerate() {
-					println!("{}: {} - {}", i + 1, track.author, track.title);
-				}
-				println!("{}", "Select the track (default: 1): ".green());
-
-				let mut selection;
-				loop {
-					let mut input = String::new();
-					std::io::stdin()
-						.read_line(&mut input)
-						.expect("Failed to read line");
-
-					selection = input.trim().parse::<usize>().unwrap_or(1) - 1;
-
-					if selection < search_results.len() {
-						break;
-					}
-					println!("{}", "Invalid selection. Try again or quit (CTRL+C):".red());
-				}
-
-				let track = &search_results[selection];
-
+			if let Some(search_results) = search_results{
+				let result = cli::select_from_search(search_results);
+				
 				if let Err(e) = downloader
-					.add_uri(&format!("spotify:track:{}", track.track_id))
+					.add_uri(&format!("spotify:track:{}", result.track_id))
 					.await
 				{
 					error!(
@@ -146,58 +127,8 @@ async fn start() {
 					return;
 				}
 			}
-
-			let refresh = Duration::from_secs(settings.refresh_ui_seconds);
-			let now = Instant::now();
-			let mut time_elapsed: u64;
-
-			'outer: loop {
-				print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-				let mut exit_flag: i8 = 1;
-
-				for download in downloader.get_downloads().await {
-					let state = download.state;
-
-					let progress: String;
-
-					if state != DownloadState::Done {
-						exit_flag &= 0;
-						progress = match state {
-							DownloadState::Downloading(r, t) => {
-								let p = r as f32 / t as f32 * 100.0;
-								if p > 100.0 {
-									"100%".to_string()
-								} else {
-									format!("{}%", p as i8)
-								}
-							}
-							DownloadState::Post => "Postprocessing... ".to_string(),
-							DownloadState::None => "Preparing... ".to_string(),
-							DownloadState::Lock => "Preparing... ".to_string(),
-							DownloadState::Error(e) => {
-								exit_flag |= 1;
-								format!("{} ", e)
-							}
-							DownloadState::Done => {
-								exit_flag |= 1;
-								"Impossible state".to_string()
-							}
-						};
-					} else {
-						progress = "Done.".to_string();
-					}
-
-					println!("{:<19}| {}", progress, download.title);
-				}
-				time_elapsed = now.elapsed().as_secs();
-				if exit_flag == 1 {
-					break 'outer;
-				}
-
-				println!("\nElapsed second(s): {}", time_elapsed);
-				task::sleep(refresh).await
-			}
-			println!("Finished download(s) in {} second(s).", time_elapsed);
+			println!("s");
+			cli::print_download_state(&downloader, settings.refresh_ui_seconds).await;
 		}
 		Err(e) => {
 			error!("{} {}", "Handling input failed:".red(), e)

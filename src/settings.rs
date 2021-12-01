@@ -1,4 +1,4 @@
-use crate::downloader::DownloaderConfig;
+use crate::{downloader::DownloaderConfig, server::websocket::WebsocketConfig};
 use crate::error::SpotifyError;
 use serde::{Deserialize, Serialize};
 
@@ -8,13 +8,14 @@ use tokio::{
 };
 
 // Structure for holding all the settings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Settings {
 	pub username: String,
 	pub password: String,
 	pub client_id: String,
 	pub client_secret: String,
 	pub refresh_ui_seconds: u64,
+	pub websocket: WebsocketConfig,
 	pub downloader: DownloaderConfig,
 }
 
@@ -27,6 +28,7 @@ impl Settings {
 			client_id: client_id.to_string(),
 			client_secret: client_secret.to_string(),
 			refresh_ui_seconds: 1,
+			websocket: WebsocketConfig::new(),
 			downloader: DownloaderConfig::new()
 		}
 	}

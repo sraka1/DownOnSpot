@@ -21,11 +21,10 @@ use crate::spotify::{Spotify, SpotifyItem};
 use crate::tag::{Field, TagWrap};
 
 /// Wrapper for use with UI
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Downloader {
 	rx: Receiver<Response>,
 	tx: Sender<Message>,
-
 	spotify: Spotify,
 }
 impl Downloader {
@@ -64,25 +63,24 @@ impl Downloader {
 		input: &str,
 	) -> Result<Option<Vec<SearchResult>>, SpotifyError> {
 		if let Ok(uri) = Spotify::parse_uri(input) {
-				if let Err(e) = self.add_uri(&uri).await {
-							return Err(e);
-						}
-				Ok(None)
-			} else {
-				let results: Vec<SearchResult> = self
-					.spotify
-					.search(input)
-					.await?
-					.into_iter()
-					.map(SearchResult::from)
-					.collect();
-				Ok(Some(results))
+			if let Err(e) = self.add_uri(&uri).await {
+				return Err(e);
 			}
+			Ok(None)
+		} else {
+			let results: Vec<SearchResult> = self
+				.spotify
+				.search(input)
+				.await?
+				.into_iter()
+				.map(SearchResult::from)
+				.collect();
+			Ok(Some(results))
+		}
 	}
 
 	/// Add URL or URI to queue
 	pub async fn add_uri(&self, uri: &str) -> Result<(), SpotifyError> {
-		let uri = Spotify::parse_uri(uri)?;
 		let item = self.spotify.resolve_uri(&uri).await?;
 		match item {
 			SpotifyItem::Track(t) => self.add_to_queue(t.into()).await,
@@ -111,11 +109,23 @@ impl Downloader {
 		Ok(())
 	}
 
+	/// Get all finished downloads
+	pub async fn get_finished_downloads(&self) -> Vec<FinishedDownload> {
+		self.tx.send(Message::GetFinished).await.unwrap();
+		if let Response::FinishedDownloads(d) = self.rx.recv().await.unwrap(){
+			d
+		} else {
+			panic!("Unexpected response");
+		}
+	}
 	/// Get all downloads
 	pub async fn get_downloads(&self) -> Vec<Download> {
 		self.tx.send(Message::GetDownloads).await.unwrap();
-		let Response::Downloads(d) = self.rx.recv().await.unwrap();
-		d
+		if let Response::Downloads(d) = self.rx.recv().await.unwrap(){
+			d
+		} else {
+			panic!("Unexpected response");
+		}
 	}
 }
 
@@ -134,6 +144,7 @@ async fn communication_thread(
 	});
 	let mut waiting_for_job = false;
 	let mut queue: Vec<Download> = vec![];
+	let mut finished: Vec<FinishedDownload> = vec![];
 
 	// Receive messages
 	while let Ok(msg) = rx.recv().await {
@@ -155,7 +166,14 @@ async fn communication_thread(
 			Message::UpdateState(id, state) => {
 				let i = queue.iter().position(|i| i.id == id).unwrap();
 				queue[i].state = state.clone();
-				if state == DownloadState::Done {
+
+				if let DownloadState::Done(path) = state {
+					finished.push(FinishedDownload {
+						id: id.clone(),
+						track_id: queue[i].track_id.clone(),
+						file_path: path,
+					});
+					//careful, download might miss this
 					queue.remove(i);
 				}
 			}
@@ -189,6 +207,9 @@ async fn communication_thread(
 			Message::GetDownloads => {
 				tx.send(Response::Downloads(queue.clone())).await.ok();
 			}
+	 		Message::GetFinished => {
+				tx.send(Response::FinishedDownloads(finished.clone())).await.ok();
+			 },
 		}
 	}
 }
@@ -416,6 +437,7 @@ impl DownloaderInternal {
 		let date = album.release_date;
 		// Write tags
 		let config = config.clone();
+		let file_path = path.clone().into_os_string().into_string().unwrap();
 		tokio::task::spawn_blocking(move || {
 			DownloaderInternal::write_tags(path, format, tags, date, cover, config)
 		})
@@ -423,7 +445,10 @@ impl DownloaderInternal {
 
 		// Done
 		self.event_tx
-			.send(Message::UpdateState(job.id, DownloadState::Done))
+			.send(Message::UpdateState(
+				job.id,
+				DownloadState::Done(file_path),
+			))
 			.await
 			.ok();
 		Ok(())
@@ -737,7 +762,7 @@ pub struct DownloadJob {
 	pub track_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Message {
 	// Send job to worker
 	GetJob,
@@ -745,16 +770,19 @@ pub enum Message {
 	UpdateState(i64, DownloadState),
 	//add to download
 	AddToQueue(Vec<Download>),
-	// Get all downloads to UI
+	// Get all downloads
 	GetDownloads,
+	// Get all finished downloads
+	GetFinished,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Response {
 	Downloads(Vec<Download>),
+	FinishedDownloads(Vec<FinishedDownload>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Download {
 	pub id: i64,
 	pub track_id: String,
@@ -763,7 +791,14 @@ pub struct Download {
 	pub state: DownloadState,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+pub struct FinishedDownload {
+	pub id: i64,
+	pub track_id: String,
+	pub file_path: String,
+}
+
+#[derive(Clone, Serialize)]
 pub struct SearchResult {
 	pub track_id: String,
 	pub author: String,
@@ -827,7 +862,7 @@ pub enum DownloadState {
 	Lock,
 	Downloading(usize, usize),
 	Post,
-	Done,
+	Done(String),
 	Error(String),
 }
 
@@ -852,7 +887,7 @@ impl ToString for Quality {
 	}
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DownloaderConfig {
 	pub concurrent_downloads: usize,
 	pub quality: Quality,
