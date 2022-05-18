@@ -55,8 +55,9 @@ Host github.com
   IdentityFile ~/.ssh/free_librespot_private_key
 ```
 
-If you do not want to use `free-librespot`, then remove the git dependency of `free-librespot`. 
+If you do not want to use `free-librespot` (i.e. if you are using a paid Spotify account), then remove the git dependency of `free-librespot`. 
 For that, delete `git = "ssh://git@github.com/oSumAtrIX/free-librespot.git"` inside `Cargo.toml`.
+For paid Spotify accounts, make sure to then add `librespot = "0.3.1"` in the `Cargo.toml` file instead.
 
 `Nightly Rust` is required to build this project. Install it by following [rustup.rs](https://rustup.rs) instructions.
 
@@ -65,6 +66,7 @@ cargo build --release
 ```
 
 If you get a linker error, you might need to download the [standard libmp3lame](https://www.rarewares.org/mp3-lame-libraries.php#libmp3lame) library.
+On OS X, it should be enough to just run `brew install lame`, provided you have [Homebrew](https://brew.sh/) installed.
 
 ## Usage/ Examples
 
@@ -79,6 +81,10 @@ $ down_on_spot.exe
 Usage:
 down_on_spot.exe (search_term | track_url | album_url | playlist_url | artist_url)
 ```
+On OS X, the `settings.json` file is created globally for the logged in user and is located in `~/.config/down_on_spot/settings.json`.
+
+Apart from your Spotify username and password, you will need to login in to the Spotify developer dashboard and [create a new private application](https://developer.spotify.com/dashboard/applications). Fill in the `client_id` and `client_secret` in your `settings.json` from your newly created app.
+All the other settings should be self-explanatory, conversion from Ogg to MP3 is disabled by default.
 
 ### Template variables
 
